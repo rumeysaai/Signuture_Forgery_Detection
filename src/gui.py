@@ -39,6 +39,10 @@ class SignatureForgeryDetectionApp:
         self.forged_folder_path = None
         self.training_in_progress = False
         
+        # Batch detection variables
+        self.cnn_batch_folder_path = None
+        self.batch_detection_in_progress = False
+        
         # Create GUI
         self.create_widgets()
         
@@ -184,6 +188,29 @@ class SignatureForgeryDetectionApp:
         )
         self.cnn_image_label.pack(pady=5)
         
+        # Batch detection button
+        cnn_batch_btn = tk.Button(
+            self.cnn_frame,
+            text="📁 Select Folder (Batch Detection)",
+            command=self.select_folder_batch_cnn,
+            bg='#9b59b6',
+            fg='white',
+            font=('Arial', 9),
+            padx=10,
+            pady=5,
+            cursor='hand2'
+        )
+        cnn_batch_btn.pack(pady=5)
+        
+        self.cnn_batch_folder_label = tk.Label(
+            self.cnn_frame,
+            text="",
+            font=('Arial', 8),
+            bg='#ecf0f1',
+            fg='gray'
+        )
+        self.cnn_batch_folder_label.pack(pady=2)
+        
         # For Siamese - two images
         self.siamese_frame = tk.Frame(image_frame, bg='#ecf0f1')
         
@@ -243,7 +270,21 @@ class SignatureForgeryDetectionApp:
             pady=12,
             cursor='hand2'
         )
-        predict_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        predict_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 5))
+        
+        # Batch predict button
+        batch_predict_btn = tk.Button(
+            left_panel,
+            text="📊 Batch Detect (Folder)",
+            command=self.predict_batch,
+            bg='#8e44ad',
+            fg='white',
+            font=('Arial', 10, 'bold'),
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        batch_predict_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
         
         # Right panel - Image display and results
         right_panel = tk.Frame(main_container, bg='white', width=650)
@@ -433,6 +474,28 @@ class SignatureForgeryDetectionApp:
         batch_entry = tk.Entry(batch_frame, textvariable=self.batch_size_var, width=10)
         batch_entry.pack(side=tk.LEFT, padx=5)
         
+        # Patience (Early Stopping)
+        patience_frame = tk.Frame(params_frame, bg='#ecf0f1')
+        patience_frame.pack(fill=tk.X, pady=5)
+        tk.Label(
+            patience_frame,
+            text="Patience:",
+            font=('Arial', 10),
+            bg='#ecf0f1',
+            width=12,
+            anchor=tk.W
+        ).pack(side=tk.LEFT)
+        self.patience_var = tk.StringVar(value="10")
+        patience_entry = tk.Entry(patience_frame, textvariable=self.patience_var, width=10)
+        patience_entry.pack(side=tk.LEFT, padx=5)
+        tk.Label(
+            patience_frame,
+            text="(Early stopping patience)",
+            font=('Arial', 8),
+            bg='#ecf0f1',
+            fg='#7f8c8d'
+        ).pack(side=tk.LEFT, padx=5)
+        
         # Start training button
         train_btn = tk.Button(
             left_panel,
@@ -569,6 +632,28 @@ class SignatureForgeryDetectionApp:
             self.selected_image_path = image_path
             self.display_image(image_path)
             self.cnn_image_label.config(text=os.path.basename(image_path))
+            # Clear batch folder selection when single image is selected
+            self.cnn_batch_folder_path = None
+            self.cnn_batch_folder_label.config(text="")
+    
+    def select_folder_batch_cnn(self):
+        """Select folder for batch CNN detection"""
+        folder_path = filedialog.askdirectory(
+            title="Select Folder with Signature Images"
+        )
+        
+        if folder_path:
+            self.cnn_batch_folder_path = folder_path
+            # Count images
+            image_count = len([f for f in os.listdir(folder_path) 
+                             if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+            self.cnn_batch_folder_label.config(
+                text=f"✓ {image_count} images selected",
+                fg='green'
+            )
+            # Clear single image selection when batch folder is selected
+            self.selected_image_path = None
+            self.cnn_image_label.config(text="No image selected")
     
     def select_image1_siamese(self):
         """Select first image for Siamese model"""
@@ -633,6 +718,124 @@ class SignatureForgeryDetectionApp:
             # Predict in a separate thread
             threading.Thread(target=self.predict_siamese, daemon=True).start()
     
+    def predict_batch(self):
+        """Perform batch prediction on folder"""
+        if self.model_type.get() != "CNN":
+            messagebox.showwarning("Warning", "Batch detection is only available for CNN model!")
+            return
+        
+        if self.cnn_model is None:
+            messagebox.showerror("Error", "Please load a CNN model first!")
+            return
+        
+        if self.cnn_batch_folder_path is None:
+            messagebox.showerror("Error", "Please select a folder with images first!")
+            return
+        
+        if self.batch_detection_in_progress:
+            messagebox.showwarning("Warning", "Batch detection is already in progress!")
+            return
+        
+        # Start batch detection in separate thread
+        self.batch_detection_in_progress = True
+        threading.Thread(target=self.predict_batch_cnn, daemon=True).start()
+    
+    def predict_batch_cnn(self):
+        """Perform batch prediction on folder"""
+        try:
+            from evaluate import predict_signature_cnn
+            import glob
+            
+            # Get all image files from folder
+            image_extensions = ['*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG']
+            image_files = []
+            for ext in image_extensions:
+                image_files.extend(glob.glob(os.path.join(self.cnn_batch_folder_path, ext)))
+            
+            if len(image_files) == 0:
+                raise Exception("No image files found in selected folder")
+            
+            total_images = len(image_files)
+            genuine_count = 0
+            forged_count = 0
+            results_list = []
+            
+            self.results_text.config(state=tk.NORMAL)
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, f"Batch Detection Started\n")
+            self.results_text.insert(tk.END, f"Processing {total_images} images...\n\n")
+            self.results_text.config(state=tk.DISABLED)
+            self.root.update()
+            
+            # Process each image
+            for idx, image_path in enumerate(image_files, 1):
+                try:
+                    is_genuine, confidence = predict_signature_cnn(
+                        self.cnn_model,
+                        image_path
+                    )
+                    
+                    if is_genuine == 1:
+                        genuine_count += 1
+                        status = "GENUINE"
+                    else:
+                        forged_count += 1
+                        status = "FORGED"
+                    
+                    results_list.append({
+                        'file': os.path.basename(image_path),
+                        'status': status,
+                        'confidence': confidence
+                    })
+                    
+                    # Update progress
+                    progress_text = f"Processed: {idx}/{total_images}\n"
+                    progress_text += f"Genuine: {genuine_count}, Forged: {forged_count}\n"
+                    progress_text += f"Current: {os.path.basename(image_path)} - {status}\n\n"
+                    
+                    self.results_text.config(state=tk.NORMAL)
+                    self.results_text.insert(tk.END, progress_text)
+                    self.results_text.see(tk.END)
+                    self.results_text.config(state=tk.DISABLED)
+                    self.root.update()
+                    
+                except Exception as e:
+                    self.results_text.config(state=tk.NORMAL)
+                    self.results_text.insert(tk.END, f"Error processing {os.path.basename(image_path)}: {str(e)}\n")
+                    self.results_text.config(state=tk.DISABLED)
+                    self.root.update()
+            
+            # Final summary
+            result_text = f"\n{'='*60}\n"
+            result_text += f"BATCH DETECTION SUMMARY\n"
+            result_text += f"{'='*60}\n\n"
+            result_text += f"Total Images: {total_images}\n"
+            result_text += f"Genuine: {genuine_count} ({genuine_count/total_images*100:.1f}%)\n"
+            result_text += f"Forged: {forged_count} ({forged_count/total_images*100:.1f}%)\n\n"
+            result_text += f"{'='*60}\n"
+            result_text += f"DETAILED RESULTS:\n"
+            result_text += f"{'='*60}\n\n"
+            
+            # Sort by confidence (highest first)
+            results_list.sort(key=lambda x: x['confidence'], reverse=True)
+            
+            for result in results_list:
+                result_text += f"{result['file']:30s} | {result['status']:8s} | {result['confidence']*100:5.2f}%\n"
+            
+            self.results_text.config(state=tk.NORMAL)
+            self.results_text.insert(tk.END, result_text)
+            self.results_text.see(tk.END)
+            self.results_text.config(state=tk.DISABLED)
+            
+        except Exception as e:
+            self.results_text.config(state=tk.NORMAL)
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, f"Error: {str(e)}")
+            self.results_text.config(state=tk.DISABLED)
+            messagebox.showerror("Error", f"Batch detection failed:\n{str(e)}")
+        finally:
+            self.batch_detection_in_progress = False
+    
     def predict_cnn(self):
         """Predict using CNN model"""
         try:
@@ -644,14 +847,25 @@ class SignatureForgeryDetectionApp:
                 sys.path.insert(0, current_dir)
             from evaluate import predict_signature_cnn
             
+            # Get current image path (may have changed)
+            current_image_path = self.selected_image_path
+            
+            if current_image_path is None:
+                raise Exception("No image selected")
+            
+            if not os.path.exists(current_image_path):
+                raise Exception(f"Image file not found: {current_image_path}")
+            
             self.results_text.config(state=tk.NORMAL)
             self.results_text.delete(1.0, tk.END)
-            self.results_text.insert(tk.END, "Analyzing signature...\n")
+            self.results_text.insert(tk.END, f"Analyzing: {os.path.basename(current_image_path)}...\n")
             self.results_text.config(state=tk.DISABLED)
+            self.root.update()
             
+            # Force new prediction (clear any potential cache)
             is_genuine, confidence = predict_signature_cnn(
                 self.cnn_model,
-                self.selected_image_path
+                current_image_path
             )
             
             if is_genuine is None:
@@ -659,6 +873,7 @@ class SignatureForgeryDetectionApp:
             
             result_text = f"CNN Model Prediction:\n"
             result_text += f"{'='*40}\n\n"
+            result_text += f"Image: {os.path.basename(current_image_path)}\n\n"
             
             if is_genuine == 1:
                 result_text += f"Result: ✓ GENUINE SIGNATURE\n"
@@ -673,6 +888,10 @@ class SignatureForgeryDetectionApp:
             self.results_text.config(state=tk.DISABLED)
             
         except Exception as e:
+            self.results_text.config(state=tk.NORMAL)
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, f"Error: {str(e)}")
+            self.results_text.config(state=tk.DISABLED)
             messagebox.showerror("Error", f"Prediction failed:\n{str(e)}")
     
     def predict_siamese(self):
@@ -686,15 +905,29 @@ class SignatureForgeryDetectionApp:
                 sys.path.insert(0, current_dir)
             from evaluate import predict_signature_siamese
             
+            # Get current image paths (may have changed)
+            current_image1_path = self.selected_image1_path
+            current_image2_path = self.selected_image2_path
+            
+            if current_image1_path is None or current_image2_path is None:
+                raise Exception("Both images must be selected")
+            
+            if not os.path.exists(current_image1_path):
+                raise Exception(f"First image file not found: {current_image1_path}")
+            if not os.path.exists(current_image2_path):
+                raise Exception(f"Second image file not found: {current_image2_path}")
+            
             self.results_text.config(state=tk.NORMAL)
             self.results_text.delete(1.0, tk.END)
-            self.results_text.insert(tk.END, "Comparing signatures...\n")
+            self.results_text.insert(tk.END, f"Comparing:\n{os.path.basename(current_image1_path)}\nvs\n{os.path.basename(current_image2_path)}...\n")
             self.results_text.config(state=tk.DISABLED)
+            self.root.update()
             
+            # Force new prediction (clear any potential cache)
             is_match, confidence = predict_signature_siamese(
                 self.siamese_model,
-                self.selected_image1_path,
-                self.selected_image2_path
+                current_image1_path,
+                current_image2_path
             )
             
             if is_match is None:
@@ -702,6 +935,8 @@ class SignatureForgeryDetectionApp:
             
             result_text = f"Siamese Network Prediction:\n"
             result_text += f"{'='*40}\n\n"
+            result_text += f"Image 1: {os.path.basename(current_image1_path)}\n"
+            result_text += f"Image 2: {os.path.basename(current_image2_path)}\n\n"
             
             if is_match == 1:
                 result_text += f"Result: ✓ SIGNATURES MATCH\n"
@@ -718,6 +953,10 @@ class SignatureForgeryDetectionApp:
             self.results_text.config(state=tk.DISABLED)
             
         except Exception as e:
+            self.results_text.config(state=tk.NORMAL)
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, f"Error: {str(e)}")
+            self.results_text.config(state=tk.DISABLED)
             messagebox.showerror("Error", f"Prediction failed:\n{str(e)}")
     
     def select_genuine_folder(self):
@@ -786,8 +1025,14 @@ class SignatureForgeryDetectionApp:
         try:
             epochs = int(self.epochs_var.get())
             batch_size = int(self.batch_size_var.get())
-        except ValueError:
-            messagebox.showerror("Error", "Please enter valid numbers for epochs and batch size!")
+            patience = int(self.patience_var.get())
+            if patience < 1:
+                raise ValueError("Patience must be at least 1")
+        except ValueError as e:
+            error_msg = "Please enter valid numbers for epochs, batch size, and patience!"
+            if "Patience" in str(e):
+                error_msg = "Patience must be a positive integer (at least 1)!"
+            messagebox.showerror("Error", error_msg)
             return
         
         model_type = self.training_model_type.get()
@@ -797,7 +1042,8 @@ class SignatureForgeryDetectionApp:
             "Confirm Training",
             f"Start training {model_type} model?\n\n"
             f"Epochs: {epochs}\n"
-            f"Batch Size: {batch_size}\n\n"
+            f"Batch Size: {batch_size}\n"
+            f"Patience: {patience}\n\n"
             f"This may take a long time. Continue?"
         )
         
@@ -813,11 +1059,11 @@ class SignatureForgeryDetectionApp:
         
         threading.Thread(
             target=self.train_model_thread,
-            args=(model_type, epochs, batch_size),
+            args=(model_type, epochs, batch_size, patience),
             daemon=True
         ).start()
     
-    def train_model_thread(self, model_type, epochs, batch_size):
+    def train_model_thread(self, model_type, epochs, batch_size, patience):
         """Training thread function"""
         try:
             import shutil
@@ -915,7 +1161,7 @@ class SignatureForgeryDetectionApp:
                     ),
                     EarlyStopping(
                         monitor='val_accuracy',
-                        patience=10,
+                        patience=patience,
                         restore_best_weights=True,
                         verbose=0
                     ),

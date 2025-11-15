@@ -78,6 +78,52 @@ Batch Size = 32
 
 ---
 
+### 4. **Patience (Early Stopping Patience)**
+
+**What does it mean?**
+- How many epochs to wait if the model doesn't improve
+- Early Stopping automatically stops training if no improvement occurs
+- Prevents overfitting and saves time
+
+**How it works:**
+- Monitors validation accuracy
+- If validation accuracy doesn't improve for `patience` epochs → stops training
+- Automatically restores the best model weights
+
+**Recommended Values:**
+- **Small dataset (<1000 signatures):** 5-10
+- **Medium dataset (1000-5000):** 10-15
+- **Large dataset (>5000):** 15-20
+- **Default:** 10 (works well in most cases)
+
+**What happens:**
+- **Patience = 10** → Wait 10 epochs, if no improvement → stop
+- **Patience = 20** → Wait 20 epochs, if no improvement → stop
+- **Patience = 5** → Wait 5 epochs, if no improvement → stop (faster stop)
+
+**Note:**
+- Too low (1-5) → May stop too early, model might not learn enough
+- Too high (30+) → May continue training unnecessarily, wastes time
+- **10 is the sweet spot** for most cases
+
+**Example:**
+```
+Patience = 10
+Epoch 1: val_accuracy = 0.88 (best)
+Epoch 2-11: val_accuracy = 0.85-0.87 (no improvement)
+→ Early Stopping activates at epoch 11
+→ Best model (Epoch 1) is restored
+→ Training stops (saves time!)
+```
+
+**Why it's useful:**
+- ✅ Prevents overfitting (model memorizing data)
+- ✅ Saves time (stops when no improvement)
+- ✅ Automatically saves best model
+- ✅ Prevents unnecessary training
+
+---
+
 ## 🔧 Parameter Combinations
 
 ### Quick Test (Quick Trial)
@@ -85,6 +131,7 @@ Batch Size = 32
 Model Type: CNN
 Epochs: 20
 Batch Size: 32
+Patience: 5
 Duration: ~15-30 minutes
 Result: Fast but low accuracy
 ```
@@ -94,6 +141,7 @@ Result: Fast but low accuracy
 Model Type: CNN
 Epochs: 50
 Batch Size: 32
+Patience: 10
 Duration: ~1-2 hours
 Result: Good accuracy (≥90% target)
 ```
@@ -103,6 +151,7 @@ Result: Good accuracy (≥90% target)
 Model Type: CNN
 Epochs: 100
 Batch Size: 32
+Patience: 15
 Duration: ~2-4 hours
 Result: Highest accuracy
 ```
@@ -112,6 +161,7 @@ Result: Highest accuracy
 Model Type: CNN
 Epochs: 50
 Batch Size: 64 or 128
+Patience: 10
 Duration: ~30-60 minutes
 Result: Fast and good accuracy
 ```
@@ -132,6 +182,12 @@ Result: Fast and good accuracy
 - ❌ More memory usage
 - ⚠️ Memory error risk
 
+### If Patience Increases:
+- ✅ More time for model to improve
+- ✅ Better for slow-learning models
+- ❌ Longer training time
+- ⚠️ May continue training unnecessarily
+
 ---
 
 ## 🎯 Recommended Starting Settings
@@ -140,16 +196,19 @@ Result: Fast and good accuracy
 - Model Type: **CNN**
 - Epochs: **30**
 - Batch Size: **32**
+- Patience: **10**
 
 **Normal Usage:**
 - Model Type: **CNN**
 - Epochs: **50**
 - Batch Size: **32**
+- Patience: **10**
 
 **Best Result:**
 - Model Type: **CNN**
 - Epochs: **100**
 - Batch Size: **32**
+- Patience: **15**
 
 ---
 
@@ -158,8 +217,9 @@ Result: Fast and good accuracy
 The training in GUI has the following features:
 
 1. **Early Stopping**
-   - Stops if no improvement for 10 epochs
-   - Saves the best model
+   - Stops if no improvement for `patience` epochs (default: 10)
+   - Saves the best model automatically
+   - Prevents overfitting
 
 2. **Learning Rate Reduction**
    - Reduces learning rate if improvement stops
@@ -231,11 +291,17 @@ A: 50 for starting, 100 for best results.
 **Q: What should Batch Size be?**
 A: 32 works well in most cases. If you get a memory error, reduce to 16.
 
+**Q: What should Patience be?**
+A: 10 is recommended for most cases. Increase to 15-20 if model is learning slowly.
+
+**Q: Why did training stop at epoch 11/100?**
+A: Early Stopping activated! The model didn't improve for 10 epochs (patience=10), so training stopped early. This is normal and good - the best model was saved automatically.
+
 **Q: Which model should I choose?**
 A: CNN is recommended for starting. You can try Siamese later.
 
 **Q: How long does training take?**
-A: Depends on data amount and parameters. Usually 1-4 hours.
+A: Depends on data amount and parameters. Usually 1-4 hours. May stop earlier if Early Stopping activates.
 
 **Q: Can I turn off the computer during training?**
 A: No! If training is interrupted, you need to start over. The best model is automatically saved but training won't complete.
@@ -250,5 +316,6 @@ A: The model memorizing the data. Early Stopping prevents this.
 - **Model Type:** CNN (for starting) or Siamese (for comparison)
 - **Epochs:** 50 (balanced) or 100 (best)
 - **Batch Size:** 32 (ideal for most cases)
+- **Patience:** 10 (default, works well in most cases)
 
-**Simple Rule:** Start with 50 epochs, 32 batch size for first trial! 🚀
+**Simple Rule:** Start with 50 epochs, 32 batch size, 10 patience for first trial! 🚀

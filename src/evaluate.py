@@ -42,6 +42,7 @@ def predict_signature_cnn(model, image_path, threshold=0.5):
     Returns:
         Prediction (1 for genuine, 0 for forged) and confidence score
     """
+    # Clear any potential cache by reloading image
     img = load_image(image_path)
     if img is None:
         return None, None
@@ -49,7 +50,7 @@ def predict_signature_cnn(model, image_path, threshold=0.5):
     # Add batch dimension
     img_batch = np.expand_dims(img, axis=0)
     
-    # Predict
+    # Predict with fresh data (no caching)
     prediction = model.predict(img_batch, verbose=0)[0][0]
     
     # Classify
@@ -72,6 +73,7 @@ def predict_signature_siamese(model, image_path1, image_path2, threshold=0.5):
     Returns:
         Prediction (1 if match, 0 if not) and confidence score
     """
+    # Clear any potential cache by reloading images
     img1 = load_image(image_path1)
     img2 = load_image(image_path2)
     
@@ -82,7 +84,7 @@ def predict_signature_siamese(model, image_path1, image_path2, threshold=0.5):
     img1_batch = np.expand_dims(img1, axis=0)
     img2_batch = np.expand_dims(img2, axis=0)
     
-    # Predict
+    # Predict with fresh data (no caching)
     prediction = model.predict([img1_batch, img2_batch], verbose=0)[0][0]
     
     # Classify
