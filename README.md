@@ -44,25 +44,35 @@ Signuture_Forgery_Detection/
 
 2. **Create a virtual environment** (recommended):
 ```bash
+# On macOS (use Python 3.9-3.12 for TensorFlow compatibility):
+python3.11 -m venv venv  # or python3.9, python3.10, python3.12
+# On Windows:
 python -m venv venv
-# On Windows (if PowerShell execution policy allows):
-venv\Scripts\Activate.ps1
-# On Windows (alternative - use batch file):
-venv\Scripts\activate.bat
-# Or use the helper script:
-.\venv\Scripts\python.exe [your_script.py]
-# On Linux/Mac:
+# On Linux:
+python3 -m venv venv
+
+# Activate virtual environment:
+# On macOS/Linux:
 source venv/bin/activate
+# On Windows (PowerShell):
+venv\Scripts\Activate.ps1
+# On Windows (CMD):
+venv\Scripts\activate.bat
 ```
 
 3. **Install dependencies**:
 ```bash
-# Using venv Python directly (recommended for Windows):
-.\venv\Scripts\python.exe -m pip install -r requirements.txt
+# Upgrade pip first
+pip install --upgrade pip
 
-# Or if venv is activated:
+# Install all dependencies
 pip install -r requirements.txt
 ```
+
+**macOS Specific Notes:**
+- Ensure you have Python 3.9-3.12 (TensorFlow doesn't support Python 3.14+ yet)
+- If using Homebrew Python, you may need to install Tkinter separately or use Anaconda Python
+- The application is optimized for macOS with native window behavior and font support
 
 4. **Prepare your dataset**:
    - Organize your signature images into two folders:
@@ -103,7 +113,24 @@ train_siamese_model(
 
 ### Running the GUI Application
 
+**On macOS:**
 ```bash
+# Option 1: Using the launcher script
+./run_mac.sh
+
+# Option 2: Manual activation
+source venv/bin/activate
+python main.py
+```
+
+**On Windows/Linux:**
+```bash
+# Activate virtual environment first
+source venv/bin/activate  # Linux/Mac
+# or
+venv\Scripts\activate  # Windows
+
+# Run the application
 python main.py
 ```
 
@@ -196,8 +223,15 @@ Results are saved in the `results/` directory including:
 
 1. **Model not loading**: Ensure model files exist in `models/` directory
 2. **Dataset not found**: Use GUI training to select folders from anywhere, or organize data in `data/genuine/` and `data/forged/` for command line training
-3. **GUI not opening**: Check Tkinter installation: `python -m tkinter`
+3. **GUI not opening**: 
+   - Check Tkinter installation: `python -m tkinter`
+   - On macOS: Ensure you're using Python 3.9-3.12 (not 3.14+)
+   - On macOS: If Tkinter is missing, use Anaconda Python or install via Homebrew: `brew install python-tk`
 4. **Memory errors**: Reduce batch size in training scripts
+5. **macOS specific issues**:
+   - If window doesn't appear: Try clicking on the Python icon in the Dock
+   - If fonts look wrong: The app will automatically use Helvetica as fallback
+   - If TensorFlow errors: Ensure Python version is 3.9-3.12
 
 ## License
 
