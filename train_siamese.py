@@ -44,21 +44,24 @@ if __name__ == "__main__":
     print(f"Forged folder: {forged_dir}")
     print("=" * 60)
     
-    # Train Siamese Network with optimized parameters
+    # Train Siamese Network with optimized parameters for 90%+ accuracy
     print("\nStarting training with optimized parameters...")
-    print("- Batch size: 128 (optimized for speed)")
-    print("- Learning rate: 0.0005 (optimized)")
-    print("- Epochs: 50")
+    print("- Batch size: 8")
+    print("- Learning rate: 0.001 (optimized)")
+    print("- Epochs: 30")
     print("- Image size: 128x128")
+    print("- Loss function: Contrastive Loss (margin=1.0, threshold=0.5)")
+    print("- Model: Advanced architecture (90%+ accuracy target)")
+    print("- Data augmentation: Enhanced")
     print()
     
     try:
         siamese_model, siamese_history, siamese_metrics = train_siamese_model(
             data_directory,
             model_save_path='models/siamese_model.h5',
-            epochs=50,
-            batch_size=128,  # Optimized batch size
-            learning_rate=0.0005,  # Optimized learning rate
+            epochs=30,
+            batch_size=8,  # Reduced batch size
+            learning_rate=0.001,  # Increased learning rate
             img_size=(128, 128)
         )
         
