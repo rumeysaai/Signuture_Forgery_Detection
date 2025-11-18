@@ -7,6 +7,7 @@ from PIL import Image, ImageTk
 import os
 import sys
 import threading
+import platform
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -18,13 +19,48 @@ if current_dir not in sys.path:
 from utils import load_image
 from models import create_cnn_model, create_siamese_network
 
+# macOS specific settings
+IS_MAC = platform.system() == 'Darwin'
+
 
 class SignatureForgeryDetectionApp:
     def __init__(self, root):
         self.root = root
+        
+        # macOS specific configurations
+        if IS_MAC:
+            # Set macOS-specific window behavior
+            try:
+                # Make window appear in foreground
+                root.lift()
+                root.attributes('-topmost', True)
+                root.after_idle(root.attributes, '-topmost', False)
+                
+                # Set window to appear in dock
+                root.createcommand('tk::mac::ReopenApplication', lambda: root.deiconify())
+                
+                # Configure for macOS appearance
+                try:
+                    # Use native macOS fonts
+                    self.default_font = ('SF Pro Display', 12) if self._font_exists('SF Pro Display') else ('Helvetica', 12)
+                    self.title_font = ('SF Pro Display', 20, 'bold') if self._font_exists('SF Pro Display') else ('Helvetica', 20, 'bold')
+                except:
+                    self.default_font = ('Helvetica', 12)
+                    self.title_font = ('Helvetica', 20, 'bold')
+            except Exception as e:
+                print(f"macOS configuration warning: {e}")
+                self.default_font = ('Helvetica', 12)
+                self.title_font = ('Helvetica', 20, 'bold')
+        else:
+            self.default_font = ('Arial', 10)
+            self.title_font = ('Arial', 20, 'bold')
+        
         self.root.title("Signature Forgery Detection System")
         self.root.geometry("1200x800")
         self.root.configure(bg='#f0f0f0')
+        
+        # Center window on screen
+        self._center_window()
         
         # Model variables
         self.cnn_model = None
@@ -49,6 +85,24 @@ class SignatureForgeryDetectionApp:
         # Load models if they exist
         self.load_models()
     
+    def _font_exists(self, font_name):
+        """Check if a font exists on the system"""
+        try:
+            from tkinter import font
+            available_fonts = font.families()
+            return font_name in available_fonts
+        except:
+            return False
+    
+    def _center_window(self):
+        """Center the window on the screen"""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+    
     def create_widgets(self):
         """Create GUI widgets"""
         # Title
@@ -59,7 +113,7 @@ class SignatureForgeryDetectionApp:
         title_label = tk.Label(
             title_frame,
             text="Signature Forgery Detection System",
-            font=('Arial', 20, 'bold'),
+            font=self.title_font,
             bg='#2c3e50',
             fg='white'
         )
@@ -470,7 +524,7 @@ class SignatureForgeryDetectionApp:
             width=12,
             anchor=tk.W
         ).pack(side=tk.LEFT)
-        self.batch_size_var = tk.StringVar(value="32")
+        self.batch_size_var = tk.StringVar(value="128")
         batch_entry = tk.Entry(batch_frame, textvariable=self.batch_size_var, width=10)
         batch_entry.pack(side=tk.LEFT, padx=5)
         
@@ -485,7 +539,7 @@ class SignatureForgeryDetectionApp:
             width=12,
             anchor=tk.W
         ).pack(side=tk.LEFT)
-        self.patience_var = tk.StringVar(value="10")
+        self.patience_var = tk.StringVar(value="7")
         patience_entry = tk.Entry(patience_frame, textvariable=self.patience_var, width=10)
         patience_entry.pack(side=tk.LEFT, padx=5)
         tk.Label(
@@ -992,19 +1046,49 @@ class SignatureForgeryDetectionApp:
             )
     
     def log_message(self, message):
-        """Add message to training logs"""
-        self.training_logs.config(state=tk.NORMAL)
-        self.training_logs.insert(tk.END, message + "\n")
-        self.training_logs.see(tk.END)
-        self.training_logs.config(state=tk.DISABLED)
-        self.root.update()
+        """Add message to training logs - thread-safe"""
+        # Always print to console for debugging
+        print(f"[LOG] {message}", flush=True)
+        
+        def _update_log():
+            try:
+                if hasattr(self, 'training_logs') and self.training_logs:
+                    self.training_logs.config(state=tk.NORMAL)
+                    self.training_logs.insert(tk.END, message + "\n")
+                    self.training_logs.see(tk.END)
+                    self.training_logs.config(state=tk.DISABLED)
+                    # Force update
+                    self.training_logs.update_idletasks()
+            except Exception as e:
+                # Fallback: print to console if GUI update fails
+                print(f"[LOG ERROR] {e}", flush=True)
+                print(f"[LOG] {message}", flush=True)
+        
+        # Always use root.after for thread safety (works on all platforms)
+        try:
+            if hasattr(self, 'root') and self.root:
+                # Use after_idle for more reliable execution
+                self.root.after_idle(_update_log)
+            else:
+                print(f"[LOG] (No root) {message}", flush=True)
+        except Exception as e:
+            # If root.after fails, print directly
+            print(f"[LOG ERROR] root.after failed: {e}", flush=True)
+            print(f"[LOG] {message}", flush=True)
     
     def update_progress(self, value, message=""):
         """Update training progress bar"""
-        self.progress_var.set(value)
-        if message:
-            self.progress_label.config(text=message)
-        self.root.update()
+        def _update_progress():
+            self.progress_var.set(value)
+            if message:
+                self.progress_label.config(text=message)
+        
+        # macOS requires GUI updates on main thread
+        if IS_MAC:
+            self.root.after(0, _update_progress)
+        else:
+            _update_progress()
+            self.root.update()
     
     def start_training(self):
         """Start model training"""
@@ -1053,20 +1137,44 @@ class SignatureForgeryDetectionApp:
         # Start training in separate thread
         self.training_in_progress = True
         self.progress_var.set(0)
-        self.training_logs.config(state=tk.NORMAL)
-        self.training_logs.delete(1.0, tk.END)
-        self.training_logs.config(state=tk.DISABLED)
         
-        threading.Thread(
+        # Clear logs and add initial message
+        def clear_logs():
+            self.training_logs.config(state=tk.NORMAL)
+            self.training_logs.delete(1.0, tk.END)
+            self.training_logs.insert(tk.END, "=" * 60 + "\n")
+            self.training_logs.insert(tk.END, f"Starting {model_type} Training\n")
+            self.training_logs.insert(tk.END, "=" * 60 + "\n\n")
+            self.training_logs.see(tk.END)
+            self.training_logs.config(state=tk.DISABLED)
+            self.training_logs.update_idletasks()
+        
+        if IS_MAC:
+            self.root.after_idle(clear_logs)
+        else:
+            clear_logs()
+        
+        # Start training thread
+        training_thread = threading.Thread(
             target=self.train_model_thread,
             args=(model_type, epochs, batch_size, patience),
             daemon=True
-        ).start()
+        )
+        training_thread.start()
+        
+        # Log that thread started
+        self.log_message(f"Training thread started for {model_type} model")
     
     def train_model_thread(self, model_type, epochs, batch_size, patience):
         """Training thread function"""
         try:
             import shutil
+            
+            # Initial log to verify logging works
+            self.log_message("=" * 60)
+            self.log_message(f"Starting {model_type} model training...")
+            self.log_message(f"Parameters: Epochs={epochs}, Batch Size={batch_size}, Patience={patience}")
+            self.log_message("=" * 60)
             
             # Create temporary data directory structure
             temp_data_dir = "data/temp_training"
@@ -1161,14 +1269,15 @@ class SignatureForgeryDetectionApp:
                     ),
                     EarlyStopping(
                         monitor='val_accuracy',
-                        patience=patience,
+                        patience=max(5, patience // 2),  # More aggressive early stopping
                         restore_best_weights=True,
-                        verbose=0
+                        verbose=0,
+                        min_delta=0.001  # Minimum improvement required
                     ),
                     ReduceLROnPlateau(
                         monitor='val_loss',
                         factor=0.5,
-                        patience=5,
+                        patience=3,  # Reduced from 5 to 3 for faster adaptation
                         min_lr=1e-7,
                         verbose=0
                     )
@@ -1214,32 +1323,310 @@ class SignatureForgeryDetectionApp:
                 self.log_message("Training Siamese Network...")
                 self.log_message("=" * 60)
                 
-                # Similar implementation for Siamese
-                self.log_message("Siamese training implementation...")
-                # TODO: Implement Siamese training with progress callbacks
-                messagebox.showinfo("Info", "Siamese training will be implemented soon!")
+                model_path = "models/siamese_model.h5"
+                embedding_path = "models/siamese_embedding.h5"
+                os.makedirs("models", exist_ok=True)
+                self.log_message(f"Model will be saved to: {model_path}")
+                self.log_message(f"Embedding network will be saved to: {embedding_path}")
+                
+                # Import required modules
+                try:
+                    self.log_message("Importing required modules...")
+                    from models import (
+                        create_siamese_network, 
+                        compile_model, 
+                        create_data_generator_for_siamese,
+                        prepare_siamese_pairs
+                    )
+                    from utils import prepare_dataset, split_dataset, evaluate_model, plot_confusion_matrix
+                    from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+                    import numpy as np
+                    self.log_message("Modules imported successfully")
+                except ImportError as e:
+                    error_msg = f"Import error: {str(e)}"
+                    self.log_message(f"ERROR: {error_msg}")
+                    raise ImportError(error_msg)
+                
+                # Prepare dataset
+                self.log_message("Loading dataset...")
+                try:
+                    X, y = prepare_dataset(temp_data_dir, (128, 128))
+                except Exception as e:
+                    self.log_message(f"ERROR loading dataset: {str(e)}")
+                    raise
+                self.log_message(f"Dataset loaded: {len(X)} images")
+                
+                X_train, X_val, X_test, y_train, y_val, y_test = split_dataset(
+                    X, y, test_size=0.2, val_size=0.1
+                )
+                
+                self.log_message(f"Train set: {len(X_train)} images")
+                self.log_message(f"Validation set: {len(X_val)} images")
+                self.log_message(f"Test set: {len(X_test)} images")
+                
+                # Create model - optimized CNN architecture
+                self.log_message("\nCreating Siamese Network (Optimized CNN Architecture)...")
+                try:
+                    # Use optimized CNN architecture
+                    siamese_model, embedding_network = create_siamese_network(
+                        input_shape=(128, 128, 3)
+                    )
+                    self.log_message("Siamese Network created successfully")
+                    # Optimized learning rate
+                    siamese_model = compile_model(siamese_model, learning_rate=0.0005)
+                    self.log_message("Model compiled successfully with learning_rate=0.0005 (optimized)")
+                except Exception as e:
+                    self.log_message(f"ERROR creating model: {str(e)}")
+                    raise
+                
+                # Callbacks (ProgressCallback will be added after steps_per_epoch is calculated)
+                callbacks = [
+                    ModelCheckpoint(
+                        model_path,
+                        monitor='val_accuracy',
+                        save_best_only=True,
+                        mode='max',
+                        verbose=0
+                    ),
+                    EarlyStopping(
+                        monitor='val_accuracy',
+                        patience=max(15, patience),  # More patience for better convergence
+                        restore_best_weights=True,
+                        verbose=0,
+                        min_delta=0.0005  # Smaller minimum improvement
+                    ),
+                    ReduceLROnPlateau(
+                        monitor='val_loss',
+                        factor=0.3,  # More aggressive reduction
+                        patience=5,  # More patience before reducing
+                        min_lr=1e-8,
+                        verbose=0,
+                        cooldown=2  # Cooldown period
+                    ),
+                    # Cosine annealing learning rate schedule for better convergence
+                    keras.callbacks.LearningRateScheduler(
+                        lambda epoch: 0.0005 * (0.98 ** epoch),  # Adjusted for 0.0005 base LR
+                        verbose=0
+                    )
+                ]
+                
+                # Create data generators for Siamese Network with augmentation
+                self.log_message("Creating data generators with augmentation...")
+                try:
+                    # Training: use augmentation
+                    train_gen = create_data_generator_for_siamese(X_train, y_train, batch_size, augment=True)
+                    # Validation: no augmentation
+                    val_gen = create_data_generator_for_siamese(X_val, y_val, batch_size, augment=False)
+                    self.log_message("Data generators created successfully (augmentation enabled for training)")
+                except Exception as e:
+                    self.log_message(f"ERROR creating data generators: {str(e)}")
+                    raise
+                
+                # Calculate steps
+                steps_per_epoch = len(X_train) // batch_size
+                validation_steps = len(X_val) // batch_size
+                
+                self.log_message(f"Steps per epoch: {steps_per_epoch}")
+                self.log_message(f"Validation steps: {validation_steps}")
+                
+                # Custom callback for progress with batch updates
+                class ProgressCallback(keras.callbacks.Callback):
+                    def __init__(self, gui_app, total_epochs, steps_per_epoch):
+                        self.gui_app = gui_app
+                        self.total_epochs = total_epochs
+                        self.steps_per_epoch = steps_per_epoch
+                        self.current_epoch = 0
+                        self.batch_count = 0
+                    
+                    def on_epoch_begin(self, epoch, logs=None):
+                        self.current_epoch = epoch
+                        self.batch_count = 0
+                        progress = 15 + (epoch / self.total_epochs) * 80
+                        if IS_MAC:
+                            self.gui_app.root.after(0, lambda: self.gui_app.update_progress(
+                                progress,
+                                f"Training epoch {epoch + 1}/{self.total_epochs}"
+                            ))
+                            self.gui_app.root.after(0, lambda: self.gui_app.log_message(f"\nEpoch {epoch + 1}/{self.total_epochs}"))
+                        else:
+                            self.gui_app.update_progress(
+                                progress,
+                                f"Training epoch {epoch + 1}/{self.total_epochs}"
+                            )
+                            self.gui_app.log_message(f"\nEpoch {epoch + 1}/{self.total_epochs}")
+                    
+                    def on_batch_end(self, batch, logs=None):
+                        self.batch_count += 1
+                        # Update every 5 batches to avoid GUI lag
+                        if self.batch_count % 5 == 0 or self.batch_count == self.steps_per_epoch:
+                            epoch_progress = self.batch_count / self.steps_per_epoch
+                            progress = 15 + ((self.current_epoch + epoch_progress) / self.total_epochs) * 80
+                            if IS_MAC:
+                                self.gui_app.root.after(0, lambda p=progress, b=self.batch_count, s=self.steps_per_epoch, e=self.current_epoch: self.gui_app.update_progress(
+                                    p,
+                                    f"Epoch {e + 1}/{self.total_epochs} - Batch {b}/{s}"
+                                ))
+                            else:
+                                self.gui_app.update_progress(
+                                    progress,
+                                    f"Epoch {self.current_epoch + 1}/{self.total_epochs} - Batch {self.batch_count}/{self.steps_per_epoch}"
+                                )
+                    
+                    def on_epoch_end(self, epoch, logs=None):
+                        if logs:
+                            msg = f"  Loss: {logs.get('loss', 0):.4f}, Accuracy: {logs.get('accuracy', 0):.4f}"
+                            if 'val_loss' in logs:
+                                msg += f"\n  Val Loss: {logs.get('val_loss', 0):.4f}, Val Accuracy: {logs.get('val_accuracy', 0):.4f}"
+                            if IS_MAC:
+                                self.gui_app.root.after(0, lambda m=msg: self.gui_app.log_message(m))
+                            else:
+                                self.gui_app.log_message(msg)
+                
+                # Add progress callback to callbacks list
+                progress_callback = ProgressCallback(self, epochs, steps_per_epoch)
+                callbacks.insert(0, progress_callback)
+                
+                # Train model
+                self.log_message("\nStarting training...")
+                history = siamese_model.fit(
+                    train_gen,
+                    steps_per_epoch=steps_per_epoch,
+                    epochs=epochs,
+                    validation_data=val_gen,
+                    validation_steps=validation_steps,
+                    callbacks=callbacks,
+                    verbose=0
+                )
+                
+                # Prepare test pairs
+                self.update_progress(95, "Evaluating model...")
+                self.log_message("\nPreparing test pairs...")
+                test_pairs_a, test_pairs_b, test_labels = prepare_siamese_pairs(
+                    X_test, y_test, num_pairs=min(500, len(X_test) * 2)
+                )
+                
+                # Evaluate on test set
+                self.log_message("Evaluating on test set...")
+                test_loss, test_accuracy = siamese_model.evaluate(
+                    [test_pairs_a, test_pairs_b], test_labels, verbose=0
+                )
+                
+                # Get predictions
+                y_pred = (siamese_model.predict([test_pairs_a, test_pairs_b], verbose=0) > 0.5).astype(int).flatten()
+                metrics = evaluate_model(test_labels, y_pred, "Siamese Network")
+                
+                # Save embedding network separately
+                embedding_network.save(embedding_path)
+                
+                self.log_message("\n" + "=" * 60)
+                self.log_message("Training Complete!")
+                self.log_message(f"Test Loss: {test_loss:.4f}")
+                self.log_message(f"Test Accuracy: {test_accuracy:.4f}")
+                self.log_message(f"Precision: {metrics['precision']:.4f}")
+                self.log_message(f"Recall: {metrics['recall']:.4f}")
+                self.log_message(f"F1-Score: {metrics['f1_score']:.4f}")
+                self.log_message("=" * 60)
+                self.log_message(f"\nModel saved to: {model_path}")
+                self.log_message(f"Embedding network saved to: {embedding_path}")
             
             self.update_progress(100, "Training completed!")
-            messagebox.showinfo("Success", f"{model_type} model training completed!")
+            
+            # Show success message
+            if IS_MAC:
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"{model_type} model training completed!"))
+            else:
+                messagebox.showinfo("Success", f"{model_type} model training completed!")
             
             # Cleanup
             if os.path.exists(temp_data_dir):
                 shutil.rmtree(temp_data_dir)
             
             # Reload models
+            self.log_message("\nReloading models...")
             self.load_models()
+            self.log_message("Models reloaded successfully!")
             
         except Exception as e:
-            self.log_message(f"\nERROR: {str(e)}")
-            messagebox.showerror("Training Error", f"Training failed:\n{str(e)}")
+            import traceback
+            error_msg = f"Training failed:\n{str(e)}"
+            full_traceback = traceback.format_exc()
+            
+            # Log error details
+            self.log_message(f"\n{'='*60}")
+            self.log_message("ERROR OCCURRED:")
+            self.log_message(f"{error_msg}")
+            self.log_message(f"\nTraceback:")
+            self.log_message(full_traceback)
+            self.log_message(f"{'='*60}")
+            
+            # Also print to console
+            print(f"\n{'='*60}")
+            print("TRAINING ERROR:")
+            print(error_msg)
+            print("\nFull Traceback:")
+            print(full_traceback)
+            print(f"{'='*60}")
+            
+            # Show error dialog
+            def show_error():
+                try:
+                    messagebox.showerror("Training Error", error_msg)
+                except:
+                    print("Could not show error dialog")
+            
+            if IS_MAC:
+                self.root.after(0, show_error)
+            else:
+                show_error()
         finally:
             self.training_in_progress = False
+            self.update_progress(0, "Ready to train")
+            self.log_message("\nTraining thread finished.")
 
 
 def main():
+    # macOS specific initialization
+    if IS_MAC:
+        # Suppress TensorFlow warnings on macOS
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        
+        # Configure for macOS
+        try:
+            # Set process name for macOS
+            import setproctitle
+            setproctitle.setproctitle("Signature Forgery Detection")
+        except ImportError:
+            pass  # Optional package
+    
     root = tk.Tk()
+    
+    # macOS specific window setup
+    if IS_MAC:
+        try:
+            # Ensure window appears in dock
+            root.createcommand('tk::mac::ReopenApplication', lambda: root.deiconify())
+            # Set app name for macOS
+            root.tk.call('::tk::unsupported::MacWindowStyle', 'style', root._w, 'documentProc', 'closeBox collapseBox resizable')
+        except:
+            pass
+    
     app = SignatureForgeryDetectionApp(root)
-    root.mainloop()
+    
+    # Handle window close event
+    def on_closing():
+        if app.training_in_progress:
+            if messagebox.askokcancel("Quit", "Training is in progress. Do you want to quit?"):
+                root.destroy()
+        else:
+            root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    
+    # Start main loop
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        root.destroy()
 
 
 if __name__ == "__main__":

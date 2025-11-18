@@ -9,7 +9,19 @@ from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLRO
 import json
 from datetime import datetime
 
-from models import create_cnn_model, create_siamese_network, compile_model, create_data_generator_for_siamese
+from models import (
+    create_cnn_model, 
+    create_siamese_network, 
+    create_siamese_network_with_contrastive,
+    compile_model, 
+    compile_siamese_with_contrastive,
+    create_data_generator_for_siamese,
+    export_model_to_onnx,
+    export_model_to_openvino,
+    export_siamese_model_to_onnx,
+    export_siamese_model_to_openvino,
+    contrastive_accuracy
+)
 from utils import prepare_dataset, split_dataset, evaluate_model, plot_training_history, plot_confusion_matrix
 
 
@@ -70,28 +82,36 @@ def train_cnn_model(data_dir, model_save_path='models/cnn_model.h5',
         ),
         EarlyStopping(
             monitor='val_accuracy',
-            patience=10,
+            patience=15,  # Increased patience for better convergence
             restore_best_weights=True,
-            verbose=1
+            verbose=1,
+            min_delta=0.001  # Minimum improvement threshold
         ),
         ReduceLROnPlateau(
             monitor='val_loss',
-            factor=0.5,
+            factor=0.3,  # More aggressive reduction
             patience=5,
             min_lr=1e-7,
-            verbose=1
+            verbose=1,
+            cooldown=2
+        ),
+        # Learning rate schedule for better convergence
+        keras.callbacks.LearningRateScheduler(
+            lambda epoch: learning_rate * (0.95 ** epoch),
+            verbose=0
         )
     ]
     
-    # Data augmentation
+    # Enhanced data augmentation for better generalization
     datagen = keras.preprocessing.image.ImageDataGenerator(
-        rotation_range=10,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.1,
-        horizontal_flip=False,
-        fill_mode='nearest'
+        rotation_range=15,
+        width_shift_range=0.15,
+        height_shift_range=0.15,
+        shear_range=0.15,
+        zoom_range=0.15,
+        brightness_range=[0.8, 1.2],
+        fill_mode='nearest',
+        horizontal_flip=False
     )
     
     # Train model
@@ -139,6 +159,14 @@ def train_cnn_model(data_dir, model_save_path='models/cnn_model.h5',
     print(f"\nModel saved to: {model_save_path}")
     print(f"Metrics saved to: {metrics_save_path}")
     
+    # Export to ONNX and OpenVINO
+    print("\nExporting model to ONNX and OpenVINO formats...")
+    onnx_path = model_save_path.replace('.h5', '.onnx')
+    export_model_to_onnx(model, onnx_path, img_size)
+    
+    openvino_dir = os.path.join(os.path.dirname(model_save_path), 'openvino', 'cnn')
+    export_model_to_openvino(model, openvino_dir, 'cnn_model', img_size)
+    
     return model, history, metrics
 
 
@@ -177,10 +205,186 @@ def train_siamese_model(data_dir, model_save_path='models/siamese_model.h5',
     print(f"Validation set: {len(X_val)} images")
     print(f"Test set: {len(X_test)} images")
     
-    # Create model
-    print("\nCreating Siamese Network...")
-    siamese_model, embedding_network = create_siamese_network(input_shape=(*img_size, 3))
-    siamese_model = compile_model(siamese_model, learning_rate=learning_rate)
+    # Create model with Contrastive Loss
+    print("\nCreating Siamese Network with Contrastive Loss...")
+    siamese_model, embedding_network = create_siamese_network_with_contrastive(input_shape=(*img_size, 3))
+    siamese_model = compile_siamese_with_contrastive(
+        siamese_model, 
+        learning_rate=learning_rate,
+        margin=1.0,
+        threshold=0.5
+    )
+    
+    print("\nModel Architecture:")
+    siamese_model.summary()
+    
+    # Create callbacks
+    os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+    
+    # For Contrastive Loss, monitor val_loss (lower is better)
+    callbacks = [
+        ModelCheckpoint(
+            model_save_path,
+            monitor='val_loss',
+            save_best_only=True,
+            mode='min',
+            verbose=1
+        ),
+        EarlyStopping(
+            monitor='val_loss',
+            patience=15,  # Increased patience for better convergence
+            restore_best_weights=True,
+            verbose=1,
+            min_delta=0.001  # Minimum improvement threshold
+        ),
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.3,  # More aggressive reduction
+            patience=5,
+            min_lr=1e-7,
+            verbose=1,
+            cooldown=2
+        ),
+        # Learning rate schedule for better convergence
+        keras.callbacks.LearningRateScheduler(
+            lambda epoch: learning_rate * (0.95 ** epoch),
+            verbose=0
+        )
+    ]
+    
+    # Create data generators
+    train_gen = create_data_generator_for_siamese(X_train, y_train, batch_size, augment=True)
+    val_gen = create_data_generator_for_siamese(X_val, y_val, batch_size, augment=False)
+    
+    # Calculate steps
+    steps_per_epoch = len(X_train) // batch_size
+    validation_steps = len(X_val) // batch_size
+    
+    # Train model
+    print("\nStarting training...")
+    history = siamese_model.fit(
+        train_gen,
+        steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        validation_data=val_gen,
+        validation_steps=validation_steps,
+        callbacks=callbacks,
+        verbose=1
+    )
+    
+    # Prepare test pairs
+    from models import prepare_siamese_pairs
+    test_pairs_a, test_pairs_b, test_labels = prepare_siamese_pairs(
+        X_test, y_test, num_pairs=min(500, len(X_test) * 2)
+    )
+    
+    # Evaluate on test set
+    print("\nEvaluating on test set...")
+    test_loss, test_accuracy = siamese_model.evaluate(
+        [test_pairs_a, test_pairs_b], test_labels, verbose=0
+    )
+    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Test Accuracy: {test_accuracy:.4f}")
+    
+    # Get predictions (distance < threshold means same class)
+    distances = siamese_model.predict([test_pairs_a, test_pairs_b], verbose=0)
+    threshold = 0.5
+    y_pred = (distances < threshold).astype(int).flatten()
+    
+    # Evaluate metrics
+    metrics = evaluate_model(test_labels, y_pred, "Siamese Network (Contrastive Loss)")
+    
+    # Create results directory if it doesn't exist
+    os.makedirs('results', exist_ok=True)
+    
+    # Plot confusion matrix
+    plot_confusion_matrix(test_labels, y_pred, "Siamese Network (Contrastive Loss)",
+                         save_path='results/siamese_confusion_matrix.png')
+    
+    # Plot training history
+    plot_training_history(history, save_path='results/siamese_training_history.png')
+    
+    # Save metrics
+    metrics_save_path = 'results/siamese_metrics.json'
+    os.makedirs('results', exist_ok=True)
+    with open(metrics_save_path, 'w') as f:
+        json.dump({
+            'accuracy': float(metrics['accuracy']),
+            'precision': float(metrics['precision']),
+            'recall': float(metrics['recall']),
+            'f1_score': float(metrics['f1_score']),
+            'test_accuracy': float(test_accuracy),
+            'test_loss': float(test_loss)
+        }, f, indent=2)
+    
+    # Save embedding network separately for inference
+    embedding_save_path = 'models/siamese_embedding.h5'
+    embedding_network.save(embedding_save_path)
+    
+    print(f"\nModel saved to: {model_save_path}")
+    print(f"Embedding network saved to: {embedding_save_path}")
+    print(f"Metrics saved to: {metrics_save_path}")
+    
+    # Export to ONNX and OpenVINO
+    print("\nExporting Siamese model to ONNX and OpenVINO formats...")
+    onnx_base_path = model_save_path.replace('.h5', '')
+    export_siamese_model_to_onnx(siamese_model, embedding_network, onnx_base_path, img_size)
+    
+    openvino_dir = os.path.join(os.path.dirname(model_save_path), 'openvino')
+    export_siamese_model_to_openvino(siamese_model, embedding_network, openvino_dir, 'siamese', img_size)
+    
+    return siamese_model, history, metrics
+
+
+def train_siamese_model_with_contrastive(data_dir, model_save_path='models/siamese_model_contrastive.h5',
+                                       epochs=50, batch_size=32, learning_rate=0.001,
+                                       img_size=(128, 128), margin=1.0, threshold=0.5):
+    """
+    Train Siamese Network with Contrastive Loss for signature verification
+    
+    Args:
+        data_dir: Directory containing genuine and forged folders
+        model_save_path: Path to save the trained model
+        epochs: Number of training epochs
+        batch_size: Batch size
+        learning_rate: Learning rate
+        img_size: Image size
+        margin: Margin parameter for Contrastive Loss (default: 1.0)
+        threshold: Distance threshold for classification (default: 0.5)
+    
+    Returns:
+        Trained model and training history
+    """
+    print("=" * 60)
+    print("Training Siamese Network with Contrastive Loss")
+    print("=" * 60)
+    
+    # Prepare dataset
+    print("\nLoading dataset...")
+    X, y = prepare_dataset(data_dir, img_size)
+    print(f"Dataset loaded: {len(X)} images")
+    
+    # Split dataset
+    X_train, X_val, X_test, y_train, y_val, y_test = split_dataset(
+        X, y, test_size=0.2, val_size=0.1
+    )
+    
+    print(f"\nTrain set: {len(X_train)} images")
+    print(f"Validation set: {len(X_val)} images")
+    print(f"Test set: {len(X_test)} images")
+    
+    # Create model with Contrastive Loss
+    print("\nCreating Siamese Network with Contrastive Loss...")
+    print(f"Margin: {margin}, Threshold: {threshold}")
+    siamese_model, embedding_network = create_siamese_network_with_contrastive(
+        input_shape=(*img_size, 3)
+    )
+    siamese_model = compile_siamese_with_contrastive(
+        siamese_model, 
+        learning_rate=learning_rate,
+        margin=margin,
+        threshold=threshold
+    )
     
     print("\nModel Architecture:")
     siamese_model.summary()
@@ -242,23 +446,25 @@ def train_siamese_model(data_dir, model_save_path='models/siamese_model.h5',
     test_loss, test_accuracy = siamese_model.evaluate(
         [test_pairs_a, test_pairs_b], test_labels, verbose=0
     )
+    print(f"Test Loss: {test_loss:.4f}")
     print(f"Test Accuracy: {test_accuracy:.4f}")
     
-    # Get predictions
-    y_pred = (siamese_model.predict([test_pairs_a, test_pairs_b]) > 0.5).astype(int).flatten()
+    # Get predictions (distance < threshold means same class)
+    distances = siamese_model.predict([test_pairs_a, test_pairs_b], verbose=0)
+    y_pred = (distances < threshold).astype(int).flatten()
     
     # Evaluate metrics
-    metrics = evaluate_model(test_labels, y_pred, "Siamese Network")
+    metrics = evaluate_model(test_labels, y_pred, "Siamese Network (Contrastive Loss)")
     
     # Plot confusion matrix
-    plot_confusion_matrix(test_labels, y_pred, "Siamese Network",
-                         save_path='results/siamese_confusion_matrix.png')
+    plot_confusion_matrix(test_labels, y_pred, "Siamese Network (Contrastive Loss)",
+                         save_path='results/siamese_contrastive_confusion_matrix.png')
     
     # Plot training history
-    plot_training_history(history, save_path='results/siamese_training_history.png')
+    plot_training_history(history, save_path='results/siamese_contrastive_training_history.png')
     
     # Save metrics
-    metrics_save_path = 'results/siamese_metrics.json'
+    metrics_save_path = 'results/siamese_contrastive_metrics.json'
     os.makedirs('results', exist_ok=True)
     with open(metrics_save_path, 'w') as f:
         json.dump({
@@ -267,16 +473,26 @@ def train_siamese_model(data_dir, model_save_path='models/siamese_model.h5',
             'recall': float(metrics['recall']),
             'f1_score': float(metrics['f1_score']),
             'test_accuracy': float(test_accuracy),
-            'test_loss': float(test_loss)
+            'test_loss': float(test_loss),
+            'margin': float(margin),
+            'threshold': float(threshold)
         }, f, indent=2)
     
     # Save embedding network separately for inference
-    embedding_save_path = 'models/siamese_embedding.h5'
+    embedding_save_path = 'models/siamese_embedding_contrastive.h5'
     embedding_network.save(embedding_save_path)
     
     print(f"\nModel saved to: {model_save_path}")
     print(f"Embedding network saved to: {embedding_save_path}")
     print(f"Metrics saved to: {metrics_save_path}")
+    
+    # Export to ONNX and OpenVINO
+    print("\nExporting Siamese model (Contrastive) to ONNX and OpenVINO formats...")
+    onnx_base_path = model_save_path.replace('.h5', '')
+    export_siamese_model_to_onnx(siamese_model, embedding_network, onnx_base_path, img_size)
+    
+    openvino_dir = os.path.join(os.path.dirname(model_save_path), 'openvino')
+    export_siamese_model_to_openvino(siamese_model, embedding_network, openvino_dir, 'siamese_contrastive', img_size)
     
     return siamese_model, history, metrics
 
@@ -312,14 +528,27 @@ if __name__ == "__main__":
         batch_size=32
     )
     
-    # Train Siamese Network
+    # Train Siamese Network (Standard)
     print("\n" + "="*60)
-    print("TRAINING SIAMESE NETWORK")
+    print("TRAINING SIAMESE NETWORK (STANDARD)")
     print("="*60)
     siamese_model, siamese_history, siamese_metrics = train_siamese_model(
         data_directory,
         model_save_path='models/siamese_model.h5',
         epochs=50,
         batch_size=32
+    )
+    
+    # Train Siamese Network with Contrastive Loss
+    print("\n" + "="*60)
+    print("TRAINING SIAMESE NETWORK WITH CONTRASTIVE LOSS")
+    print("="*60)
+    siamese_contrastive_model, siamese_contrastive_history, siamese_contrastive_metrics = train_siamese_model_with_contrastive(
+        data_directory,
+        model_save_path='models/siamese_model_contrastive.h5',
+        epochs=50,
+        batch_size=4,
+        margin=1.0,
+        threshold=0.5
     )
 
